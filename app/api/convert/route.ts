@@ -194,21 +194,29 @@ async function runYouTubeExtractionPipeline(jobId: string, url: string, initialT
   const ytDlpPath = path.join(process.cwd(), 'bin/yt-dlp');
   const tempInputTemplate = path.join(INPUTS_DIR, `${jobId}.%(ext)s`);
 
-  // Attempt yt-dlp audio download
-  // If cloud IP is blocked by YouTube bot challenge, yt-dlp returns non-zero with "Sign in to confirm you're not a bot"
   job.stage = 'Extracting audio stream from source...';
   job.progress = 25;
 
-  const ytdlProcess = spawn(ytDlpPath, [
-    '--no-playlist',
-    '--extract-audio',
-    '--audio-format', 'mp3',
-    '--audio-quality', '192K',
-    '--ffmpeg-location', '/usr/bin/ffmpeg',
-    '-o', tempInputTemplate,
-    '--no-warnings',
-    url,
-  ]);
+  const ytdlProcess = spawn(
+    ytDlpPath,
+    [
+      '--no-playlist',
+      '--extract-audio',
+      '--audio-format', 'mp3',
+      '--audio-quality', '192K',
+      '--ffmpeg-location', '/usr/bin/ffmpeg',
+      '--js-runtimes', 'node:/usr/bin/node',
+      '-o', tempInputTemplate,
+      '--no-warnings',
+      url,
+    ],
+    {
+      env: {
+        ...process.env,
+        PATH: `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${process.env.PATH || ''}`,
+      },
+    }
+  );
 
   let stderrOutput = '';
   ytdlProcess.stderr.on('data', (d) => {
@@ -221,7 +229,7 @@ async function runYouTubeExtractionPipeline(jobId: string, url: string, initialT
       const match = text.match(/\[download\]\s+([\d.]+)%/);
       if (match && match[1]) {
         const dlPercent = parseFloat(match[1]);
-        job.progress = Math.min(85, Math.round(25 + (dlPercent * 0.6)));
+        job.progress = Math.min(85, Math.round(25 + dlPercent * 0.6));
         job.stage = `Downloading audio stream (${Math.round(dlPercent)}%)...`;
       }
     } else if (text.includes('[ExtractAudio]') || text.includes('ffmpeg')) {
@@ -234,7 +242,6 @@ async function runYouTubeExtractionPipeline(jobId: string, url: string, initialT
     const expectedMp3 = path.join(INPUTS_DIR, `${jobId}.mp3`);
 
     if (code === 0 && fs.existsSync(expectedMp3)) {
-      // Direct extraction succeeded! Now move to outputs and probe final stats
       const finalOutputPath = path.join(process.cwd(), '..', '..', 'tmp/mp3-downloader/outputs', `${jobId}.mp3`);
       const outputsDir = path.dirname(finalOutputPath);
       if (!fs.existsSync(outputsDir)) fs.mkdirSync(outputsDir, { recursive: true });
@@ -252,22 +259,30 @@ async function runYouTubeExtractionPipeline(jobId: string, url: string, initialT
       job.outputFilePath = finalOutputPath;
       job.fileSizeBytes = stats.size;
     } else {
-      // Check if YouTube blocked due to bot protection / datacenter IP check
       const isBotBlocked =
         stderrOutput.includes('Sign in to confirm you’re not a bot') ||
         stderrOutput.includes('bot verification') ||
         stderrOutput.includes('HTTP Error 429') ||
-        stderrOutput.includes('403: Forbidden');
+        stderrOutput.includes('403: Forbidden') ||
+        stderrOutput.includes('confirm you');
 
       job.status = 'error';
       if (isBotBlocked) {
         job.errorCode = 'BOT_RESTRICTION';
         job.error =
-          'YouTube cloud IP restriction: YouTube requires bot verification for cloud extraction. You can convert any saved video/audio file directly via our FFmpeg engine below, or test with our sample track.';
+          'YouTube cloud IP restriction: YouTube requires bot verification for cloud server extraction. You can convert any downloaded video/audio file directly via our FFmpeg engine below, or test with our sample track.';
       } else {
         job.errorCode = 'CONVERSION_FAILED';
+        // Clean up error message to prevent confusing system messages
+        let cleanErr = stderrOutput.trim();
+        if (cleanErr.includes('ERROR:')) {
+          cleanErr = cleanErr.split('ERROR:').pop()?.trim() || cleanErr;
+        }
+        if (cleanErr.length > 250) {
+          cleanErr = cleanErr.slice(0, 250) + '...';
+        }
         job.error =
-          stderrOutput.slice(-300).trim() ||
+          cleanErr ||
           'Could not extract audio from this URL. The video may be private, age-restricted, or region-locked.';
       }
     }
@@ -276,6 +291,6 @@ async function runYouTubeExtractionPipeline(jobId: string, url: string, initialT
   ytdlProcess.on('error', (err) => {
     job.status = 'error';
     job.errorCode = 'CONVERSION_FAILED';
-    job.error = `Extraction service error: ${err.message}`;
+    job.error = `Conversion engine error: ${err.message}`;
   });
 }

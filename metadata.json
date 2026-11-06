@@ -1,0 +1,6 @@
+{
+  "name": "MP3 Downloader",
+  "description": "Minimal, modern YouTube to MP3 converter and audio extractor powered by FFmpeg.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
